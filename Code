@@ -1,0 +1,133 @@
+package com.example.taskmanager;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Service;
+import java.util.*;
+import java.time.Instant;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+
+@SpringBootApplication
+public class TaskManagerApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(TaskManagerApplication.class, args);
+    }
+}
+
+// Task Model
+@Document(collection = "tasks")
+class Task {
+    @Id
+    private String id;
+    private String name;
+    private String owner;
+    private String command;
+    private List<TaskExecution> taskExecutions = new ArrayList<>();
+    
+    // Getters and setters
+}
+
+// Task Execution Model
+class TaskExecution {
+    private Instant startTime;
+    private Instant endTime;
+    private String output;
+    
+    // Getters and setters
+}
+
+@Repository
+interface TaskRepository extends MongoRepository<Task, String> {
+    List<Task> findByNameContaining(String name);
+}
+
+@Service
+class TaskService {
+    @Autowired
+    private TaskRepository taskRepository;
+
+    public List<Task> getAllTasks() {
+        return taskRepository.findAll();
+    }
+
+    public Optional<Task> getTaskById(String id) {
+        return taskRepository.findById(id);
+    }
+
+    public Task saveTask(Task task) {
+        return taskRepository.save(task);
+    }
+
+    public void deleteTask(String id) {
+        taskRepository.deleteById(id);
+    }
+
+    public List<Task> findByName(String name) {
+        return taskRepository.findByNameContaining(name);
+    }
+
+    public TaskExecution executeTask(Task task) throws Exception {
+        Instant start = Instant.now();
+        Process process = Runtime.getRuntime().exec(task.getCommand());
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        String output = reader.lines().reduce("", (a, b) -> a + "\n" + b);
+        process.waitFor();
+        Instant end = Instant.now();
+        TaskExecution execution = new TaskExecution(start, end, output);
+        task.getTaskExecutions().add(execution);
+        taskRepository.save(task);
+        return execution;
+    }
+}
+
+@RestController
+@RequestMapping("/tasks")
+class TaskController {
+    @Autowired
+    private TaskService taskService;
+
+    @GetMapping
+    public ResponseEntity<?> getTasks(@RequestParam(required = false) String id) {
+        if (id != null) {
+            return taskService.getTaskById(id)
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
+        return ResponseEntity.ok(taskService.getAllTasks());
+    }
+
+    @PutMapping
+    public ResponseEntity<Task> addTask(@RequestBody Task task) {
+        return ResponseEntity.ok(taskService.saveTask(task));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteTask(@PathVariable String id) {
+        taskService.deleteTask(id);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/find")
+    public ResponseEntity<List<Task>> findTasks(@RequestParam String name) {
+        List<Task> tasks = taskService.findByName(name);
+        return tasks.isEmpty() ? ResponseEntity.notFound().build() : ResponseEntity.ok(tasks);
+    }
+
+    @PutMapping("/{id}/execute")
+    public ResponseEntity<?> executeTask(@PathVariable String id) {
+        return taskService.getTaskById(id)
+                .map(task -> {
+                    try {
+                        return ResponseEntity.ok(taskService.executeTask(task));
+                    } catch (Exception e) {
+                        return ResponseEntity.internalServerError().body("Execution failed: " + e.getMessage());
+                    }
+                }).orElse(ResponseEntity.notFound().build());
+    }
+}
